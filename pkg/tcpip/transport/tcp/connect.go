@@ -867,8 +867,10 @@ func sendTCPBatch(r *stack.Route, tf tcpFields, pkt *stack.PacketBuffer, gso sta
 		// packet already has the truncated data.
 		shouldSplitPacket := i != n-1
 		if shouldSplitPacket {
+			buf := pkt.Data().ToBuffer()
 			splitPkt := stack.NewPacketBuffer(stack.PacketBufferOptions{ReserveHeaderBytes: hdrSize})
-			splitPkt.Data().ReadFrom(pkt.Data(), packetSize)
+			splitPkt.Data().ReadFrom(&buf, packetSize)
+			buf.Release()
 			pkt = splitPkt
 		}
 		pkt.Hash = tf.txHash

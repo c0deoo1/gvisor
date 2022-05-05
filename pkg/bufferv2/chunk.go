@@ -38,9 +38,9 @@ const (
 	// payloads.
 	baseChunkSize = 1 << baseChunkSizeLog2 // 64
 
-	// The largest payload size that we pool. Payloads larger than this will
-	// allocated from the heap and garbage collected as normal.
-	maxChunkSize = baseChunkSize << (numPools - 1) // 65536
+	// MaxChunkSize is largest payload size that we pool. Payloads larger than
+	// this will be allocated from the heap and garbage collected as normal.
+	MaxChunkSize = baseChunkSize << (numPools - 1) // 64k
 
 	// The number of chunk pools we have for use.
 	numPools = 11
@@ -77,6 +77,8 @@ func getChunkPool(size int) *sync.Pool {
 }
 
 // Chunk represents a slice of pooled memory.
+//
+// +stateify savable
 type chunk struct {
 	chunkRefs
 	data []byte
@@ -84,7 +86,7 @@ type chunk struct {
 
 func newChunk(size int) *chunk {
 	var c *chunk
-	if !PoolingEnabled || size > maxChunkSize {
+	if !PoolingEnabled || size > MaxChunkSize {
 		c = &chunk{
 			data: make([]byte, size),
 		}
@@ -100,7 +102,7 @@ func newChunk(size int) *chunk {
 }
 
 func (c *chunk) destroy() {
-	if !PoolingEnabled || len(c.data) > maxChunkSize {
+	if !PoolingEnabled || len(c.data) > MaxChunkSize {
 		c.data = nil
 		return
 	}
