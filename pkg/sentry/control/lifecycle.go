@@ -46,9 +46,35 @@ type Lifecycle struct {
 	// namespaces.
 	MountNamespacesMap map[string]*vfs.MountNamespace
 
-	// containerInitProcessMap is a map of container ID and the init(PID 1)
-	// threadgroup of the container.
-	containerInitProcessMap map[string]*kernel.ThreadGroup
+	// containerMap is a map of the container id and the container.
+	containerMap map[string]*Container
+}
+
+// ContainerState is the state of the container.
+type ContainerState int
+
+const (
+	// Created is the state when the container was created. It is the
+	// initial state.
+	Created ContainerState = iota
+
+	// Running is the state when the container/application is running.
+	Running
+
+	// Stopped is the state when the container has exited.
+	Stopped
+)
+
+// Container contains the set of parameters to represent a container.
+type Container struct {
+	// containerID.
+	containerID string
+
+	// tg is the init(PID 1) threadgroup of the container.
+	tg *kernel.ThreadGroup
+
+	// state is the current state of the container.
+	state ContainerState
 }
 
 // StartContainerArgs is the set of arguments to start a container.
@@ -102,6 +128,32 @@ func (args StartContainerArgs) String() string {
 		a[0] = args.Filename
 	}
 	return strings.Join(a, " ")
+}
+
+func (l *Lifecycle) updateContainerState(containerID string, state ContainerState) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	c, ok := l.containerMap[containerID]
+	if !ok {
+		return fmt.Errorf("container %v not started", containerID)
+	}
+
+	if state != Created && state != Running && state != Stopped {
+		return fmt.Errorf("invalid new state: %v", state)
+	}
+
+	if state == Created {
+		// Initial state, never transitions to it.
+		return fmt.Errorf("invalid state transition: %v => %v", c.state, state)
+	}
+
+	if state == Running && c.state != Created {
+		return fmt.Errorf("invalid state transition: %v => %v", c.state, state)
+	}
+
+	c.state = state
+	return nil
 }
 
 // StartContainer will start a new container in the sandbox.
@@ -177,16 +229,24 @@ func (l *Lifecycle) StartContainer(args *StartContainerArgs, _ *uint32) error {
 		return err
 	}
 
+	c := &Container{
+		containerID: initArgs.ContainerID,
+		tg:          tg,
+		state:       Created,
+	}
+
+	l.mu.Lock()
+	if l.containerMap == nil {
+		l.containerMap = make(map[string]*Container)
+	}
+	l.containerMap[initArgs.ContainerID] = c
+	l.mu.Unlock()
+
 	// Start the newly created process.
 	l.Kernel.StartProcess(tg)
 	log.Infof("Started the new container %v ", initArgs.ContainerID)
 
-	l.mu.Lock()
-	if l.containerInitProcessMap == nil {
-		l.containerInitProcessMap = make(map[string]*kernel.ThreadGroup)
-	}
-	l.containerInitProcessMap[initArgs.ContainerID] = tg
-	l.mu.Unlock()
+	l.updateContainerState(initArgs.ContainerID, Running)
 	return nil
 }
 
@@ -212,11 +272,11 @@ func (l *Lifecycle) getInitContainerProcess(containerID string) (*kernel.ThreadG
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	tg, ok := l.containerInitProcessMap[containerID]
+	c, ok := l.containerMap[containerID]
 	if !ok {
 		return nil, fmt.Errorf("container %v not started", containerID)
 	}
-	return tg, nil
+	return c.tg, nil
 }
 
 // ContainerArgs is the set of arguments for container related APIs after
@@ -235,5 +295,24 @@ func (l *Lifecycle) WaitContainer(args *ContainerArgs, waitStatus *uint32) error
 
 	tg.WaitExited()
 	*waitStatus = uint32(tg.ExitStatus())
+	if err := l.updateContainerState(args.ContainerID, Stopped); err != nil {
+		return err
+	}
+	return nil
+}
+
+// IsContainerRunning returns true if the container is running.
+func (l *Lifecycle) IsContainerRunning(args *ContainerArgs, running *bool) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	c, ok := l.containerMap[args.ContainerID]
+	if !ok {
+		return nil
+	}
+
+	if c.state == Running {
+		*running = true
+	}
 	return nil
 }
