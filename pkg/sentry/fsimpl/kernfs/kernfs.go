@@ -330,8 +330,8 @@ func (d *Dentry) cacheLocked(ctx context.Context) {
 	// because it has zero references.
 	// Note that a dentry may not always have a parent; for example magic links
 	// as described in Inode.Getlink.
-	if isDead := d.VFSDentry().IsDead(); isDead || d.parent == nil {
-		if !isDead {
+	if d.VFSDentry().IsDead() || d.parent == nil {
+		if d.parent == nil {
 			d.fs.vfsfs.VirtualFilesystem().InvalidateDentry(ctx, d.VFSDentry())
 		}
 		if d.cached {
@@ -340,6 +340,12 @@ func (d *Dentry) cacheLocked(ctx context.Context) {
 			d.cached = false
 		}
 		d.destroyLocked(ctx)
+		return
+	}
+	if d.VFSDentry().IsEvictable() {
+		if d.cached {
+			d.evictLocked(ctx)
+		}
 		return
 	}
 	// If d is already cached, just move it to the front of the LRU.
@@ -356,36 +362,33 @@ func (d *Dentry) cacheLocked(ctx context.Context) {
 	if d.fs.cachedDentriesLen <= d.fs.MaxCachedDentries {
 		return
 	}
-	d.fs.evictCachedDentryLocked(ctx)
+	// Evict the least recently used dentry because cache size is greater than
+	// max cache size (configured on mount).
+	d.fs.cachedDentries.Back().evictLocked(ctx)
 	// Whether or not victim was destroyed, we brought fs.cachedDentriesLen
 	// back down to fs.opts.maxCachedDentries, so we don't loop.
 }
 
 // Preconditions:
-//   - fs.mu must be locked for writing.
-//   - fs.cachedDentriesLen != 0.
-func (fs *Filesystem) evictCachedDentryLocked(ctx context.Context) {
-	// Evict the least recently used dentry because cache size is greater than
-	// max cache size (configured on mount).
-	victim := fs.cachedDentries.Back()
-	fs.cachedDentries.Remove(victim)
-	fs.cachedDentriesLen--
-	victim.cached = false
+//   - d.fs.mu must be locked for writing.
+//   - d.cached is true.
+func (d *Dentry) evictLocked(ctx context.Context) {
+	d.fs.cachedDentries.Remove(d)
+	d.fs.cachedDentriesLen--
+	d.cached = false
 	// victim.refs may have become non-zero from an earlier path resolution
 	// after it was inserted into fs.cachedDentries.
-	if victim.refs.Load() == 0 {
-		if !victim.vfsd.IsDead() {
-			victim.parent.dirMu.Lock()
+	if d.refs.Load() == 0 {
+		if !d.vfsd.IsDead() {
+			d.parent.dirMu.Lock()
 			// Note that victim can't be a mount point (in any mount
 			// namespace), since VFS holds references on mount points.
-			fs.vfsfs.VirtualFilesystem().InvalidateDentry(ctx, victim.VFSDentry())
-			delete(victim.parent.children, victim.name)
-			victim.parent.dirMu.Unlock()
+			d.fs.vfsfs.VirtualFilesystem().InvalidateDentry(ctx, d.VFSDentry())
+			delete(d.parent.children, d.name)
+			d.parent.dirMu.Unlock()
 		}
-		victim.destroyLocked(ctx)
+		d.destroyLocked(ctx)
 	}
-	// Whether or not victim was destroyed, we brought fs.cachedDentriesLen
-	// back down to fs.MaxCachedDentries, so we don't loop.
 }
 
 // destroyLocked destroys the dentry.

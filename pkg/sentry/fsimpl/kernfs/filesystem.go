@@ -266,7 +266,7 @@ func (fs *Filesystem) Release(ctx context.Context) {
 	fs.mu.Lock()
 	root.releaseKeptDentriesLocked(ctx)
 	for fs.cachedDentriesLen != 0 {
-		fs.evictCachedDentryLocked(ctx)
+		fs.cachedDentries.Back().evictLocked(ctx)
 	}
 	fs.mu.Unlock()
 	// Drop ref acquired in Dentry.InitRoot().
